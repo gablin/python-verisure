@@ -1,0 +1,145 @@
+#!/usr/bin/python3
+
+import argparse
+import http.client, urllib
+import json
+import os
+import sys
+import time
+import verisure
+
+
+#==========
+# SETTINGS
+#==========
+
+CONFIG_FILE = '/etc/verisure/config.json'
+
+
+#================
+# UTIL FUNCTIONS
+#================
+
+def formatMsg(prefix, msg):
+  indented_msg = msg.replace('\n', '\n' + ' ' * len(prefix))
+  return '{}{}'.format(prefix, indented_msg)
+
+def fail(msg):
+  sys.stderr.write(formatMsg('E: ', msg) + '\n')
+  sys.exit(1)
+
+def info(msg):
+  sys.stdout.write(formatMsg('I: ', msg) + '\n')
+
+class MyArgParser(argparse.ArgumentParser):
+  def error(self, msg):
+    fail('{}\n{}'.format(msg, 'Use \'--help\' for option description'))
+
+def parseCli():
+  parser = MyArgParser()
+  parser.add_argument( '-c'
+                     , '--create-cookie'
+                     , help='Create a new MFA cookie'
+                     , default=False
+                     , action='store_true'
+                     )
+  return parser.parse_args()
+
+def ensureFileExists(f):
+  if not os.path.exists(f):
+    fail('File does not exist: {}'.format(f))
+  if not os.path.isfile(f):
+    fail('Not a file: {}'.format(f))
+
+def readConfig():
+  global CONFIG_FILE
+  f = CONFIG_FILE
+  ensureFileExists(f)
+  with open(f, 'r') as fh:
+    return json.load(fh)
+
+def writeConfig(data):
+  global CONFIG_FILE
+  f = CONFIG_FILE
+  with open(f, 'w') as fh:
+    return json.dump(data, fh, indent=2, sort_keys=True)
+
+def currentTimestamp():
+  return time.localtime()
+
+def serTimestamp(ts):
+  return time.strftime('%Y-%m-%dT%H:%M:%S', ts)
+
+def deserTimestamp(s):
+  return time.strptime(s, '%Y-%m-%dT%H:%M:%S')
+
+def timestamp2secs(ts):
+  return time.mktime(ts)
+
+def nowSecs():
+  return timestamp2secs(currentTimestamp())
+
+def sendMessage(config, msg):
+  conn = http.client.HTTPSConnection('api.pushover.net:443')
+  conn.request('POST'
+              , '/1/messages.json'
+              , urllib.parse.urlencode(
+                  { 'token': config['pushover_api_token']
+                  , 'user': config['pushover_user_key']
+                  , 'title': 'VARNING'
+                  , 'message': msg
+                  , 'priority': 1
+                  , 'sound': config['pushover_sound']
+                  }
+                )
+             , { 'Content-type': 'application/x-www-form-urlencoded' }
+             )
+  res = conn.getresponse()
+  if res.status != 200:
+    body = res.read().decode('ascii')
+    fail('Failed to send message: {}'.format(body))
+
+
+#======
+# MAIN
+#======
+
+args = parseCli()
+config = readConfig()
+session = verisure.Session( config['verisure_username']
+                          , config['verisure_password']
+                          , config['cookie_file']
+                          )
+
+if args.create_cookie:
+  session.login_mfa()
+  code = input('Enter verification code: ')
+  session.mfa_validate(code, True)
+  info('Cookie created')
+  sys.exit(0)
+
+session.login()
+session.set_giid(session.installations[0]['giid'])
+
+# Read door status
+result = session.get_door_window()
+devices = result['doorWindowDevice']
+for (i, door) in enumerate(config['doors']):
+  for dev in devices:
+    if dev['deviceLabel'] == door['label']:
+      if dev['state'] == 'CLOSE':
+        door['last_closed'] = serTimestamp(currentTimestamp())
+      else:
+        # Check if door has been opened longer than limit
+        ts = deserTimestamp(door['last_closed']) \
+             if 'last_closed' in door else currentTimestamp()
+        open_s = nowSecs() - timestamp2secs(ts)
+        if open_s >= door['limit']:
+          res = sendMessage(config, door['alarm_message'])
+
+          # Reset timestamp to prevent alarm spamming
+          door['last_closed'] = serTimestamp(currentTimestamp())
+      config['doors'][i] = door
+      break
+
+writeConfig(config)
