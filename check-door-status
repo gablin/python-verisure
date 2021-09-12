@@ -142,4 +142,25 @@ for (i, door) in enumerate(config['doors']):
       config['doors'][i] = door
       break
 
+# Read lock status
+result = session.get_lock_state()
+devices = result
+for (i, lock) in enumerate(config['locks']):
+  for dev in devices:
+    if dev['deviceLabel'] == lock['label']:
+      if dev['currentLockState'] == 'LOCKED':
+        lock['last_locked'] = serTimestamp(currentTimestamp())
+      else:
+        # Check if lock has been unlocked longer than limit
+        ts = deserTimestamp(lock['last_locked']) \
+             if 'last_locked' in lock else currentTimestamp()
+        open_s = nowSecs() - timestamp2secs(ts)
+        if open_s >= lock['limit']:
+          res = sendMessage(config, lock['alarm_message'])
+
+          # Reset timestamp to prevent alarm spamming
+          lock['last_closed'] = serTimestamp(currentTimestamp())
+      config['locks'][i] = lock
+      break
+
 writeConfig(config)
