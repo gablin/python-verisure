@@ -14,6 +14,7 @@ import verisure
 #==========
 
 CONFIG_FILE = '/etc/verisure/config.json'
+FAIL_COUNT_FILE = '/var/lib/verisure/failures'
 
 
 #================
@@ -51,6 +52,15 @@ def ensureFileExists(f):
   if not os.path.isfile(f):
     fail('Not a file: {}'.format(f))
 
+def createFileIfNotFound(f, default_content):
+  d = os.path.dirname(f)
+  os.makedirs(name=d, exist_ok=True)
+  if os.path.isfile(f):
+    return
+  with open(f, 'w') as fh:
+    print(default_content)
+    fh.write(default_content)
+
 def readConfig():
   global CONFIG_FILE
   f = CONFIG_FILE
@@ -63,6 +73,20 @@ def writeConfig(data):
   f = CONFIG_FILE
   with open(f, 'w') as fh:
     return json.dump(data, fh, indent=2, sort_keys=True)
+
+def readFailCount():
+  global FAIL_COUNT_FILE
+  f = FAIL_COUNT_FILE
+  createFileIfNotFound(f, '0')
+  with open(f, 'r') as fh:
+    return int(fh.read().strip())
+
+def writeFailCount(n):
+  global FAIL_COUNT_FILE
+  f = FAIL_COUNT_FILE
+  createFileIfNotFound(f, '0')
+  with open(f, 'w') as fh:
+    return fh.write('{}'.format(n))
 
 def currentTimestamp():
   return time.localtime()
@@ -118,8 +142,18 @@ if args.create_cookie:
   info('Cookie created')
   sys.exit(0)
 
-session.login()
-session.set_giid(session.installations[0]['giid'])
+try:
+  session.login()
+  session.set_giid(session.installations[0]['giid'])
+except Exception as e:
+  n = readFailCount() + 1
+  if n >= config['fail_limit']:
+    sendMessage(config, str(e))
+    writeFailCount(0)
+    fail(str(e))
+  else:
+    # Die silently
+    sys.exit(1)
 
 # Read door status
 result = session.get_door_window()
