@@ -136,31 +136,33 @@ session = verisure.Session( config['verisure_username']
                           )
 
 if args.create_cookie:
-  session.login_mfa()
+  session.request_mfa()
   code = input('Enter verification code: ')
-  session.mfa_validate(code, True)
+  session.validate_mfa(code)
   info('Cookie created')
   sys.exit(0)
 
 try:
-  session.login()
-  session.set_giid(session.installations[0]['giid'])
+  installations = session.login_cookie()
+  giid = installations['data']['account']['installations'][0]['giid']
+  session.set_giid(giid)
 except Exception as e:
   n = readFailCount() + 1
+  writeFailCount(n)
   if n >= config['fail_limit']:
     sendMessage(config, str(e))
-    writeFailCount(0)
     fail(str(e))
   else:
     # Die silently
     sys.exit(1)
+writeFailCount(0)
 
 # Read door status
-result = session.get_door_window()
-devices = result['doorWindowDevice']
+result = session.request(session.door_window())
+devices = result['data']['installation']['doorWindows']
 for (i, door) in enumerate(config['doors']):
   for dev in devices:
-    if dev['deviceLabel'] == door['label']:
+    if dev['device']['deviceLabel'] == door['label']:
       if dev['state'] == 'CLOSE':
         door['last_closed'] = serTimestamp(currentTimestamp())
       else:
@@ -177,12 +179,12 @@ for (i, door) in enumerate(config['doors']):
       break
 
 # Read lock status
-result = session.get_lock_state()
-devices = result
+result = session.request(session.smart_lock())
+devices = result['data']['installation']['smartLocks']
 for (i, lock) in enumerate(config['locks']):
   for dev in devices:
-    if dev['deviceLabel'] == lock['label']:
-      if dev['currentLockState'] == 'LOCKED':
+    if dev['device']['deviceLabel'] == lock['label']:
+      if dev['lockStatus'] == 'LOCKED':
         lock['last_locked'] = serTimestamp(currentTimestamp())
       else:
         # Check if lock has been unlocked longer than limit
